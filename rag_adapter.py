@@ -33,9 +33,12 @@ class GeminiRAGAdapter:
         )
 
         prompt = f"""Answer the question using only the provided contexts.
+Some retrieved contexts may be irrelevant to the question.
+Image captions are valid evidence for information visible in diagrams,
+including dimensions, labels, pins, and connections.
 If the answer is not in the contexts, say that you do not know.
 When authoritative document text conflicts with an image caption, follow the
-authoritative document text. Use image captions only for extra visual details.
+authoritative document text.
 Keep the answer concise.
 
 Question:
