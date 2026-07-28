@@ -639,7 +639,38 @@ not equivalent to a poor system answer.
 
 ---
 
-## 14. Limitations and Future Work
+## 14. Post-Evaluation Robustness Fixes
+
+The final 40-question RAGAS run was completed before the submission and
+runtime-ingestion fixes below were added. These changes improve robustness,
+diagnostics and demonstration usability, but they were **not evaluated in a
+new controlled run**. Therefore, the scores reported in this document must not
+be interpreted as evidence that these fixes improved the core RAG
+architecture.
+
+| Fix | Motivation | Validation performed | Effect on reported metrics |
+|---|---|---|---|
+| Runtime vision captions for uploaded images and PDF pages | OCR extracts characters but loses visual relationships such as arrows, wiring and dimensions | A mounting-hole diagram produced a caption containing the correct 10.2 mm and 11.4 mm center-to-center distances | Not measured; final RAGAS scores are unchanged |
+| OCR and vision caption stored as separate text chunks | Preserve exact recognized text while adding a searchable visual interpretation | Confirmed that both chunks were created and the caption retained the original image path | Not measured |
+| Caption prompt extended to preserve dimensions and spatial relationships | Generic captions could list values without explaining which holes, arrows or locations they described | The test caption correctly distinguished upper/lower spacing and hole diameters | Single-document functional test only |
+| Caption failure reporting and OCR fallback | A vision API failure must not silently discard an otherwise usable document | `/ingest` now reports `vision_captions`, `caption_failures` and `completed_with_warnings` while retaining native/OCR text | Reliability improvement, not a metric result |
+| Minimal answer-grounding clarification | Once captions became runtime evidence, the generator needed to recognize them as valid for visible labels, pins, connections and dimensions | One end-to-end smoke test answered the uploaded dimension question from its retrieved caption | Not included in the 40-question evaluation |
+| README, snapshot and startup corrections | Make the submission reproducible without repeating corpus embedding | Commands, ports, snapshot contents, ignored secrets and ingestion steps were audited | No architectural or metric effect |
+
+An attempted query-specific ranking prompt was also tested and then reverted.
+Although it fixed one ambiguous example, it risked overfitting generation to a
+single retrieval order. The retained grounding change is deliberately narrow:
+it only states that some contexts may be irrelevant and that image captions
+are valid evidence for visible information.
+
+This separation is important for scientific reporting. The evaluated final
+architecture remains the system described in Sections 5–13. The additions in
+this section should be treated as post-evaluation engineering fixes that
+require a future regression run before any improvement claim is made.
+
+---
+
+## 15. Limitations and Future Work
 
 1. **Metadata-aware board filtering.** Extract board names such as V4.0 and
    Mega 2560 into explicit metadata and filter or boost matching candidates.
@@ -665,7 +696,7 @@ not equivalent to a poor system answer.
 
 ---
 
-## 15. Deployment and Demonstration
+## 16. Deployment and Demonstration
 
 The live Streamlit dashboard exposes:
 
@@ -690,7 +721,7 @@ The snapshot avoids repeating the original embedding process.
 
 ---
 
-## 16. Conclusion
+## 17. Conclusion
 
 The final system was shaped by measured failures rather than by adding
 techniques for their own sake.
