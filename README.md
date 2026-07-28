@@ -131,16 +131,17 @@ Document
 Markdown documents are chunked by headings and sections. PDFs are processed
 page by page.
 
-For the supplied Arduino corpus, images and wiring diagrams were processed
-offline with a vision-language model. The resulting detailed captions are
-embedded as text and retain a path to the original image. This is the
-multimodal caption pipeline evaluated in the report.
+Images and wiring diagrams are processed with both OCR and a vision-language
+model. The vision model produces a detailed technical caption that preserves
+visible labels, dimensions, pins, connections and spatial relationships. OCR
+text and captions are stored as separate searchable text chunks, while the
+caption metadata retains a path to the original image.
 
-Runtime uploads through `/ingest` use native extraction and OCR, then index
-the resulting text chunks. Their extracted image/page files are retained for
-inspection, but new vision captions are not generated automatically during
-the request. This keeps random-document ingestion fast and avoids one
-vision-model API call per page.
+The same pipeline runs automatically for images and PDF pages uploaded through
+`/ingest`. If vision captioning fails, ingestion keeps the OCR/native text,
+returns `completed_with_warnings`, and lists the problem under
+`caption_failures`. Captioning requires one Gemini generation request per
+image or PDF page, so image-heavy documents take longer to ingest.
 
 ### Retrieval and generation
 

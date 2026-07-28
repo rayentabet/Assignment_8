@@ -4,6 +4,10 @@ import shutil
 import zipfile
 from pathlib import Path
 
+from google import genai
+
+from .caption_images import create_caption
+
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".tiff", ".bmp"}
 HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.+)$")
@@ -327,6 +331,55 @@ def parse_image(path, output_directory):
     }
 
 
+def add_vision_captions(chunks):
+    client = genai.Client()
+    text_chunks = {
+        chunk["chunk_id"]: chunk
+        for chunk in chunks
+        if chunk["modality"] == "text"
+    }
+    caption_chunks = []
+    caption_failures = []
+
+    for image in [
+        chunk for chunk in chunks if chunk["modality"] == "image"
+    ]:
+        parent_id = image["metadata"].get("parent_chunk_id")
+        nearby_text = text_chunks.get(parent_id, {}).get("text", "")[:4000]
+
+        try:
+            caption = create_caption(client, image, nearby_text)
+        except Exception as error:
+            caption_failures.append(
+                {
+                    "image": image["image_path"],
+                    "error": str(error),
+                }
+            )
+            continue
+
+        if caption.upper() == "SKIP":
+            continue
+
+        caption_chunks.append(
+            {
+                "chunk_id": f"caption-{image['chunk_id']}",
+                "modality": "text",
+                "text": caption,
+                "metadata": {
+                    **image["metadata"],
+                    "content_type": "image_caption",
+                    "image_path": image["image_path"],
+                },
+            }
+        )
+
+    return chunks + caption_chunks, {
+        "vision_captions": len(caption_chunks),
+        "caption_failures": caption_failures,
+    }
+
+
 def ingest_document(path: Path, output_directory: Path):
     output_directory.mkdir(parents=True, exist_ok=True)
     extension = path.suffix.lower()
@@ -346,6 +399,9 @@ def ingest_document(path: Path, output_directory: Path):
     else:
         raise ValueError(f"Unsupported file type: {extension}")
 
+    chunks, caption_details = add_vision_captions(chunks)
+    details.update(caption_details)
+
     chunks_path = output_directory / "chunks.jsonl"
     write_chunks(chunks, chunks_path)
 
@@ -355,7 +411,7 @@ def ingest_document(path: Path, output_directory: Path):
 
     if text_chunks == 0:
         status = "failed"
-    elif failed_pages:
+    elif failed_pages or details["caption_failures"]:
         status = "completed_with_warnings"
     else:
         status = "completed"

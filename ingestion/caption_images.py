@@ -27,7 +27,9 @@ For a useful technical image, use this structure:
 Component: Identify the board, module, document page, table, or interface.
 Purpose: State what the image demonstrates.
 Technical details: Preserve visible labels, values, pins, connections, table
-fields, chart relationships, warnings, and protocols exactly.
+fields, chart relationships, dimensions, hole diameters, spacing, warnings,
+and protocols exactly. Describe which object, arrow, axis, row, or location
+each value belongs to so the caption preserves spatial relationships.
 Uncertainty: State anything that cannot be read confidently.
 
 Rules:
