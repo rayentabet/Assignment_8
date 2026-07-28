@@ -1,0 +1,31 @@
+[project]
+name = "arduino-rag-evaluation"
+version = "0.1.0"
+description = "Reproducible evaluation runner for the Arduino RAG project"
+requires-python = ">=3.10"
+dependencies = [
+    "datasets",
+    "fastapi",
+    "google-genai",
+    "langchain-openai",
+    "langchain-google-genai",
+    "langchain-ollama",
+    "pandas",
+    "Pillow",
+    "PyMuPDF",
+    "pytesseract",
+    "python-docx",
+    "python-dotenv",
+    "python-multipart",
+    "python-pptx",
+    "qdrant-client",
+    "rank-bm25",
+    "ragas>=0.2,<0.3",
+    "requests",
+    "sentence-transformers",
+    "streamlit",
+    "uvicorn",
+]
+
+[tool.setuptools.packages.find]
+include = ["embedding*", "evaluation*", "ingestion*", "retrieval*"]
