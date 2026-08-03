@@ -206,18 +206,12 @@ with qdrant_tab:
     st.divider()
     st.header("Ingest document")
     uploaded_file = st.file_uploader(
-        "PDF, Markdown, TXT, DOCX, PPTX or image",
+        "PDF, Markdown, TXT or DOCX",
         type=[
             "pdf",
             "md",
             "txt",
             "docx",
-            "pptx",
-            "png",
-            "jpg",
-            "jpeg",
-            "webp",
-            "tiff",
         ],
     )
 

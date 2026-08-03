@@ -67,8 +67,6 @@ Supported formats:
 - Markdown
 - TXT
 - DOCX
-- PPTX
-- PNG, JPEG, WebP, TIFF and BMP images
 
 For PDFs, native extraction is attempted first. A page with fewer than 30
 extracted characters is rendered and passed to Tesseract OCR. If neither
@@ -123,25 +121,33 @@ pages are readable.
 Document
   → format-specific parser
   → native text extraction or OCR
-  → section/page chunks with metadata
+  → section-aware chunks with heading paths and page-range metadata
   → Gemini embeddings
   → Qdrant
 ```
 
-Markdown documents are chunked by headings and sections. PDFs are processed
-page by page.
+Markdown documents are chunked by headings and sections. PDFs use their table
+of contents/bookmarks as the primary section hierarchy and fall back to layout
+and font signals when bookmarks are unavailable. Repeated margin headers and
+footers are removed, and sections may continue across page boundaries. Sections
+are kept intact up to a target size and oversized sections
+are split at paragraph boundaries with a 1,000-token hard limit and limited
+paragraph overlap. Page ranges remain attached as citation metadata.
 
-Images and wiring diagrams are processed with both OCR and a vision-language
-model. The vision model produces a detailed technical caption that preserves
+Useful, non-duplicate images and wiring diagrams are processed with a vision-language
+model, while scanned pages use OCR for their text. The vision model produces a detailed technical caption that preserves
 visible labels, dimensions, pins, connections and spatial relationships. OCR
 text and captions are stored as separate searchable text chunks, while the
-caption metadata retains a path to the original image.
+caption metadata retains a path to the original image, its related section and
+its parent text chunk.
 
 The same pipeline runs automatically for images and PDF pages uploaded through
 `/ingest`. If vision captioning fails, ingestion keeps the OCR/native text,
 returns `completed_with_warnings`, and lists the problem under
 `caption_failures`. Captioning requires one Gemini generation request per
 image or PDF page, so image-heavy documents take longer to ingest.
+Generation requests are spaced according to `GEMINI_REQUESTS_PER_MINUTE`
+(10 by default) to avoid exceeding the configured per-minute rate.
 
 ### Retrieval and generation
 
@@ -190,7 +196,7 @@ Example `/ask` request:
 
 ## Evaluation design
 
-The project includes a 100-question golden dataset:
+The project includes a 50-question robotics-focused golden dataset:
 
 ```text
 arduino_rag_gold_dataset_final.jsonl
@@ -199,9 +205,10 @@ arduino_rag_gold_dataset_final.jsonl
 Each record contains a question, expected answer, expected retrieved
 information, source location and whether visual evidence is required.
 
-RAGAS uses local `qwen3:4b-instruct` through Ollama as the primary judge.
-Gemini or OpenRouter is used only to retry missing metric values. Completed
-scores are saved incrementally so an interrupted evaluation can resume.
+RAGAS uses Nemotron 3 Ultra through OpenRouter as the primary judge and local
+`qwen3:4b-instruct` through Ollama as a fallback. Each question and metric is
+evaluated and saved independently so an interrupted evaluation can resume
+cleanly.
 
 Existing prediction and metric files are stored in `runs/` and can be viewed
 without recalculating them.
@@ -214,7 +221,8 @@ Requirements:
 - Docker Desktop
 - Tesseract OCR
 - Gemini API key
-- Ollama only when recalculating RAGAS metrics
+- OpenRouter API key when recalculating RAGAS metrics
+- Ollama with `qwen3:4b-instruct` for the optional local evaluation fallback
 
 ### 1. Install dependencies
 
@@ -297,7 +305,7 @@ not be included in the submission.
 - `retrieval/`: multi-query, BM25/vector fusion and reranking
 - `evaluation/`: FastAPI endpoints and RAGAS evaluation
 - `dashboard.py`: Streamlit test, evaluation and Qdrant interface
-- `arduino_rag_gold_dataset_final.jsonl`: 100-question golden dataset
+- `arduino_rag_gold_dataset_final.jsonl`: 50-question robotics golden dataset
 - `runs/`: saved experiment predictions and metrics
 - `qdrant_snapshot/`: prepared vector-store snapshot and checksum
 - `report/`: final report in Markdown and DOCX formats

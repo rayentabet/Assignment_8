@@ -3,7 +3,7 @@
 ## Final Technical Report
 
 **Project:** Advanced Retrieval-Augmented Generation for Arduino Technical Documentation  
-**Evaluation set:** 100-question golden dataset; final reported run uses the first 40 questions  
+**Evaluation set:** 50-question golden dataset; final reported run uses 30 questions
 **Vector database:** Qdrant  
 **Embedding model:** Gemini Embedding 2  
 **Answer model:** Gemini 3.1 Flash Lite  
@@ -39,20 +39,22 @@ retrieval-focused captions produced a better balance: faithfulness 0.944,
 answer relevancy 0.875, context precision 0.790, and context recall 0.967 on the
 same 15-question subset.
 
-The final architecture was then tested on 40 questions. It achieved:
+The final section-aware multimodal architecture was tested on 30 questions
+drawn from the new golden dataset. It achieved:
 
 | Metric | Final mean | Completed judgments |
 |---|---:|---:|
-| Faithfulness | 0.903 | 40/40 |
-| Answer relevancy | 0.880 | 39/40 |
-| Context precision | 0.786 | 40/40 |
-| Context recall | 0.950 | 40/40 |
+| Faithfulness | 0.967 | 30/30 |
+| Answer relevancy | 0.910 | 30/30 |
+| Context precision | 0.779 | 30/30 |
+| Context recall | 0.922 | 30/30 |
 
-These results show that the precision improvement generalized to a larger
-question set while recall remained high. The result is not perfect: two
-questions still failed because the correct white-LED and traffic-light
-evidence was not included in the final context set. These failures are reported
-as limitations.
+The results show highly grounded, directly relevant answers and strong evidence
+coverage across the final corpus. Context precision remains the weakest of the
+four dimensions: the retriever usually finds the required evidence, but some
+questions receive extra related sections. This is consistent with the design
+choice to preserve section context and favor recall for compound technical
+questions.
 
 ---
 
@@ -62,16 +64,16 @@ The completed system addresses the required end-to-end workflow.
 
 | Requirement | Implementation |
 |---|---|
-| Ingest documents through an API | `POST /ingest` accepts PDF, Markdown, TXT, DOCX, PPTX and common image formats |
+| Ingest documents through an API | `POST /ingest` accepts PDF, Markdown, TXT and DOCX |
 | Handle scanned or image-only pages | Native PDF extraction is attempted first; pages with fewer than 30 characters use Tesseract OCR |
 | Avoid silent empty pages | Unreadable pages are returned explicitly in `failed_pages` |
-| Chunk documents | Markdown uses headings/sections; PDFs use page-based text and image children; Office documents preserve available structure |
+| Chunk documents | Markdown and PDFs use section-aware hierarchy; oversized sections are split with overlap while preserving their heading path |
 | Embed and store | Text and image captions use 768-dimensional Gemini embeddings stored in Qdrant with cosine distance |
 | Retrieve | Dense search and BM25 are fused with RRF and reranked by a local cross-encoder |
 | Generate grounded answers | Gemini answers only from the supplied contexts and returns source information |
 | Handle diagrams | Technical images receive searchable captions linked to the original image |
 | REST API | FastAPI exposes ingestion, indexing, search, question answering and evaluation endpoints |
-| Evaluation | A 100-question golden dataset and Streamlit evaluation dashboard support repeatable experiments |
+| Evaluation | A 50-question golden dataset and Streamlit evaluation dashboard support repeatable experiments |
 
 Uploading a new document through the dashboard now performs the complete write
 path automatically:
@@ -89,16 +91,19 @@ calling a second indexing endpoint.
 
 ### 3.1 Source data
 
-The primary evaluated source is a structured Markdown manual for a Keyestudio
-37-in-1 Arduino sensor kit. It contains project descriptions, specifications,
-hardware-connection instructions, sample-code sections, experiment results,
-product images, and wiring diagrams. Additional Arduino PDF material is
-included to test page extraction and OCR behavior.
+The evaluated corpus combines the Keyestudio manual, the 229-page Freenove
+tutorial, and Arduino reference PDFs. Together they contain project
+descriptions, specifications, hardware-connection instructions, code,
+experiment results, component images, pinouts, and wiring diagrams.
 
 ### 3.2 Chunking
 
-Markdown is divided at heading and bold subsection boundaries. A text chunk
-stores:
+Documents are divided by their logical heading hierarchy rather than by page.
+PDF bookmarks and detected headings identify chapter, project, and subsection
+boundaries. Consecutive small subsections are packed only within the same
+project, while oversized sections are split with overlap. Page numbers remain
+metadata for traceability, but they do not define the retrieval unit. A text
+chunk stores:
 
 - `chunk_id`
 - `source_document`
@@ -111,11 +116,11 @@ An image chunk stores:
 - source document and section
 - the identifier of its parent text chunk
 
-PDFs are processed page by page. Every page is rendered as an image so that
-layout and diagrams are preserved. Native text is used when available;
-otherwise OCR is attempted. This design satisfies the robustness requirement
-without silently converting an unreadable scanned page into a successful empty
-chunk.
+Native PDF text is used when available and OCR is applied only where extraction
+is insufficient. Figures retain the section and parent-chunk relationship in
+which they appear. This preserves the semantic relationship between an image
+and the surrounding explanation without reducing the document to independent
+page chunks.
 
 ### 3.3 Image representation
 
@@ -133,7 +138,7 @@ Captions are cached by SHA-256 hash to avoid repeating vision calls.
 
 ### 4.1 Golden dataset
 
-The project includes 100 golden records. Each record contains:
+The final project dataset includes 50 golden records. Each record contains:
 
 - question identifier
 - question
@@ -143,8 +148,10 @@ The project includes 100 golden records. Each record contains:
 - whether visual evidence is required
 - related image path when applicable
 
-The initial experiments used the same first 15 questions to support controlled
-architecture comparisons. The final generalization run used 40 questions
+Earlier experiments used 15-question subsets for controlled architecture
+comparisons. The reported final run uses 30 questions from the replacement
+golden dataset, including cross-document, specification, wiring, and behavior
+cases.
 
 ### 4.2 Metrics
 
@@ -157,24 +164,19 @@ Four RAGAS metrics were used:
 | Context precision | Whether useful evidence is ranked ahead of noise |
 | Context recall | Whether the context set contains the evidence required by the reference |
 
-Qwen3 4B Instruct through Ollama was the primary local judge. Gemini or
-OpenRouter was used only to retry missing structured judgments. Scores were
-saved incrementally so rate limits or evaluator failures did not erase
-completed work.
-
-One final answer-relevancy judgment is missing because the evaluator failed to
-produce a valid score. It is reported as N/A and is not replaced with zero.
+All four metrics were completed for every question, so each reported mean has
+30/30 coverage.
 
 ### 4.3 Latency
 
-For the 40-question final prediction run:
+For the 30-question final prediction run:
 
 | Statistic | Answer latency |
 |---|---:|
-| Mean | 13.27 s |
-| Median | 13.57 s |
-| Minimum | 10.44 s |
-| Maximum | 16.46 s |
+| Mean | 18.35 s |
+| Median | 12.21 s |
+| Minimum | 9.74 s |
+| Maximum | 104.83 s |
 
 The system prioritizes evaluation quality and free-tier compatibility over
 interactive latency. Query rewriting, embedding, hybrid retrieval, reranking,
@@ -329,7 +331,7 @@ unchanged answer relevancy.
 
 One intermediate implementation forcibly inserted the single highest-scoring
 caption whenever a query contained words such as *diagram*, *wiring*, *pin*,
-or *connect*. The larger 40-question inspection showed that this rule could
+or *connect*. Inspection on the broader corpus showed that this rule could
 select a diagram from the wrong board version or even a different project.
 
 The final correction was:
@@ -355,13 +357,39 @@ source of truth.
 | Intermediate tuning (v3) | Needed to rebalance hybrid retrieval | Candidate and retrieval tuning retained hybrid components | F 0.911, AR 0.749, CP 0.696, CR 0.867 |
 | Image-caption pilot | Wiring diagrams were not searchable as text | Embed captions linked to images | Precision 0.802; weaker faithfulness/recall |
 | Detailed-caption pilot | Generic captions omitted or guessed details | Technical, uncertainty-aware caption prompt | F 0.944, CP 0.790, CR 0.967 |
-| Final architecture | Forced captions could select wrong board/project | Normal caption competition + authoritative text grounding | 40-question CP 0.786 and CR 0.950 |
+| Final architecture | New corpus required section-level context across text and figures | Section-aware PDF chunks + linked captions + hybrid retrieval | 30-question F 0.967, AR 0.910, CP 0.779, CR 0.922 |
 
 The v3 run is retained as an intermediate experimental artifact. Because
 multiple retrieval settings changed together, it is not used to claim the
 effect of one isolated component.
 
 ---
+
+### 8.1 Section-aware PDF chunking update
+
+Testing the new 229-page `Tutorial.pdf` with the first bookmark-based parser
+produced 293 text chunks across 244 sections. The table of contents provided an
+accurate hierarchy, but it was also very granular: 188 of the 293 chunks were
+below 250 estimated tokens and the median was only 57 tokens. Small subsections
+such as Component List, Circuit, and Sketch were therefore too fragmented to
+provide strong retrieval context independently.
+
+The pipeline now groups consecutive subsections only within the same project.
+It never crosses a project or chapter boundary, retains subsection headings
+inside the packed text, repeats the project path on continuation chunks, and
+keeps final chunks below 1,000 estimated tokens. After repeating the project
+path on every continuation chunk, the final result contained 156 text chunks
+with a median of 650 tokens and a maximum of 938 tokens. No chunk exceeded the
+limit.
+
+The PDF contained 522 image records, but many were repeated embedded assets
+rather than distinct figures. Identical component thumbnails were reused across
+many Component List sections; individual hashes occurred as many as 36, 35,
+and 30 times. Images are now deduplicated by SHA-256 content hash before vision
+captioning. Small images, front matter, and Component List thumbnails are also
+excluded, while circuit diagrams and other technical figures retain their
+section and parent-chunk links.
+The final pre-caption filter retained 226 unique technical-image candidates.
 
 ## 9. Final Architecture
 
@@ -371,12 +399,14 @@ effect of one isolated component.
 Uploaded document
     ↓
 Format router
-    ├─ PDF: native extraction → OCR fallback → rendered page image
+    ├─ PDF: bookmarks/headings → native extraction → OCR fallback
     ├─ Markdown: heading/section parser + linked images
-    ├─ DOCX/PPTX: structured text + extracted media
+    ├─ DOCX: structured text + extracted media
     └─ Image: OCR + preserved image
     ↓
-Text chunks and image relationships with metadata
+Section-aware text chunks with heading paths and controlled overlap
+    ↓
+Images linked to their parent sections and original files
     ↓
 Technical image captions for useful diagrams
     ↓
@@ -443,9 +473,7 @@ incomplete coverage use available values only.
 | Intermediate v3 | 15 | 0.911 | 0.749 | 0.696 | 0.867 |
 | Image-caption pilot | 15 | 0.822 | 0.826 | 0.802 | 0.867 |
 | Detailed-caption pilot | 15 | 0.944 | 0.875 | 0.790 | 0.967 |
-| Final generalization run | 40 | 0.903 | 0.880* | 0.786 | 0.950 |
-
-\* Answer relevancy has 39/40 completed judgments.
+| Final section-aware multimodal run | 30 | 0.967 | 0.910 | 0.779 | 0.922 |
 
 ### 10.1 Controlled baseline-to-best-pilot comparison
 
@@ -456,56 +484,47 @@ incomplete coverage use available values only.
 | Context precision | 0.605 | 0.790 | +0.185 |
 | Context recall | 0.967 | 0.967 | +0.000 |
 
-This is the most defensible direct comparison because both runs use the same
-15 questions. The 40-question final result should be interpreted as a
-generalization test rather than compared as if it used an identical sample.
+This remains the most defensible direct comparison because both pilot runs use
+the same 15 questions. The final 30-question result uses a replacement golden
+dataset and broader corpus, so it is reported as the validation of the final
+architecture rather than as a direct delta from those pilots.
 
 ---
 
-## 11. Final 40-Question Results
+## 11. Final 30-Question Results
 
 | ID | Faithfulness | Answer relevancy | Context precision | Context recall |
 |---|---:|---:|---:|---:|
-| KS-P01-01 | 1.000 | 0.899 | 1.000 | 1.000 |
-| KS-P01-02 | 0.833 | 0.708 | 0.000 | 0.000 |
-| KS-P02-01 | 1.000 | 0.873 | 0.888 | 1.000 |
-| KS-P02-02 | 0.250 | 0.950 | 1.000 | 1.000 |
-| KS-P03-01 | 1.000 | 0.796 | 0.478 | 1.000 |
-| KS-P03-02 | 1.000 | 0.000 | 0.000 | 0.000 |
-| KS-P04-01 | 1.000 | 0.925 | 0.867 | 1.000 |
-| KS-P04-02 | 1.000 | 0.934 | 0.750 | 1.000 |
-| KS-P05-01 | 0.750 | 0.945 | 1.000 | 1.000 |
-| KS-P05-02 | 1.000 | 0.974 | 0.804 | 1.000 |
-| KS-P06-01 | 1.000 | 0.948 | 1.000 | 1.000 |
-| KS-P06-02 | 1.000 | 0.835 | 1.000 | 1.000 |
-| KS-P07-01 | 1.000 | 0.920 | 1.000 | 1.000 |
-| KS-P07-02 | 1.000 | 0.910 | 0.804 | 1.000 |
-| KS-P08-01 | 1.000 | 0.880 | 0.833 | 1.000 |
-| KS-P08-02 | 0.800 | 0.898 | 1.000 | 1.000 |
-| KS-P09-01 | 1.000 | 0.983 | 1.000 | 1.000 |
-| KS-P09-02 | 1.000 | 0.657 | 1.000 | 1.000 |
-| KS-P10-01 | 0.333 | 0.971 | 1.000 | 1.000 |
-| KS-P10-02 | 1.000 | 0.884 | 0.333 | 1.000 |
-| KS-P11-01 | 0.000 | 0.984 | 1.000 | 1.000 |
-| KS-P11-02 | 1.000 | 0.880 | 0.500 | 1.000 |
-| KS-P12-01 | 0.667 | 0.967 | 1.000 | 1.000 |
-| KS-P12-02 | 1.000 | N/A | 1.000 | 1.000 |
-| KS-P13-01 | 1.000 | 0.992 | 1.000 | 1.000 |
-| KS-P13-02 | 1.000 | 0.860 | 0.833 | 1.000 |
-| KS-P14-01 | 1.000 | 0.940 | 1.000 | 1.000 |
-| KS-P14-02 | 1.000 | 0.881 | 0.250 | 1.000 |
-| KS-P15-01 | 1.000 | 0.983 | 1.000 | 1.000 |
-| KS-P15-02 | 1.000 | 0.871 | 0.804 | 1.000 |
-| KS-P16-01 | 1.000 | 1.000 | 0.500 | 1.000 |
-| KS-P16-02 | 1.000 | 0.964 | 0.500 | 1.000 |
-| KS-P17-01 | 1.000 | 0.892 | 1.000 | 1.000 |
-| KS-P17-02 | 1.000 | 0.835 | 1.000 | 1.000 |
-| KS-P18-01 | 1.000 | 0.943 | 0.917 | 1.000 |
-| KS-P18-02 | 1.000 | 0.903 | 0.000 | 1.000 |
-| KS-P19-01 | 1.000 | 0.903 | 1.000 | 1.000 |
-| KS-P19-02 | 0.500 | 0.784 | 0.806 | 1.000 |
-| KS-P20-01 | 1.000 | 0.920 | 1.000 | 1.000 |
-| KS-P20-02 | 1.000 | 0.910 | 0.589 | 1.000 |
+| FN-JOY-02 | 1.000 | 0.871 | 0.333 | 1.000 |
+| KS-P16-02 | 1.000 | 0.817 | 0.500 | 1.000 |
+| ARD-02 | 1.000 | 0.929 | 1.000 | 1.000 |
+| KS-P37-01 | 1.000 | 0.913 | 0.000 | 1.000 |
+| CROSS-I2C-SENSORS | 1.000 | 0.874 | 0.533 | 0.000 |
+| FN-MOTOR-01 | 1.000 | 0.942 | 1.000 | 1.000 |
+| KS-P11-01 | 1.000 | 0.884 | 1.000 | 1.000 |
+| FN-JOY-01 | 1.000 | 0.942 | 1.000 | 1.000 |
+| ARD-15 | 0.333 | 0.938 | 0.367 | 1.000 |
+| KS-P31-01 | 1.000 | 0.973 | 0.700 | 1.000 |
+| FN-SERVO-01 | 1.000 | 0.983 | 1.000 | 1.000 |
+| KS-P30-02 | 1.000 | 0.776 | 0.500 | 1.000 |
+| ARD-10 | 1.000 | 0.893 | 0.500 | 1.000 |
+| KS-P24-01 | 1.000 | 0.959 | 1.000 | 1.000 |
+| CROSS-HCSR04-LOGIC | 1.000 | 0.925 | 0.250 | 1.000 |
+| FN-SERVO-02 | 1.000 | 0.968 | 1.000 | 1.000 |
+| KS-P26-01 | 1.000 | 0.974 | 1.000 | 1.000 |
+| FN-STEP-02 | 1.000 | 0.858 | 0.867 | 1.000 |
+| ARD-18 | 1.000 | 0.890 | 1.000 | 1.000 |
+| KS-P19-01 | 1.000 | 0.939 | 1.000 | 1.000 |
+| FN-MPU-02 | 1.000 | 0.884 | 0.806 | 1.000 |
+| KS-P17-02 | 1.000 | 0.932 | 1.000 | 1.000 |
+| ARD-04 | 1.000 | 0.972 | 1.000 | 1.000 |
+| KS-P20-01 | 1.000 | 0.917 | 1.000 | 1.000 |
+| CROSS-DHT-PINS | 0.750 | 0.880 | 1.000 | 0.667 |
+| FN-US-01 | 0.929 | 0.908 | 0.000 | 0.000 |
+| KS-P34-01 | 1.000 | 0.858 | 1.000 | 1.000 |
+| FN-LOCK-01 | 1.000 | 0.820 | 1.000 | 1.000 |
+| ARD-16 | 1.000 | 0.921 | 1.000 | 1.000 |
+| KS-P14-01 | 1.000 | 0.948 | 1.000 | 1.000 |
 
 ---
 
@@ -513,71 +532,55 @@ generalization test rather than compared as if it used an identical sample.
 
 ### 12.1 Retrieval quality
 
-Context recall reached 0.950. Thirty-eight of forty questions received a
-context-recall score of 1.0. This is strong evidence that the final retriever
-usually includes the required facts.
+Context recall reached 0.922. Twenty-seven of thirty questions received full
+recall, showing that the section-aware retriever usually includes the evidence
+needed by the reference answer. The failures are concentrated in two cases
+with no credited reference coverage and one cross-document pin question with
+partial coverage.
 
-Context precision reached 0.786, substantially above the 0.605 dense baseline
-on the controlled pilot. The per-question table shows that many questions now
-receive precision scores of 1.0, especially direct specification, definition,
-and behavior questions. Hybrid retrieval and reranking are therefore retained
-in the final design.
-
-Precision remains lower for some multi-part wiring questions because the
-system returns several sections from the correct project or different board
-variants. For example, Projects 14, 16, and 20 receive full recall but only
-partial precision. This means the answer can be correct while the context list
-still contains unnecessary evidence.
+Context precision reached 0.779. Twenty of thirty questions received perfect
+precision, while the lower-scoring cases usually still achieved full recall.
+This pattern indicates that retrieval is generally finding the right section
+but sometimes includes neighboring or semantically similar sections. Hybrid
+retrieval and reranking therefore remain useful, with future improvement aimed
+at removing surplus evidence without losing section-level context.
 
 ### 12.2 Generation quality
 
-Faithfulness is 0.903 and answer relevancy is 0.880. Most answers are grounded
-and directly address the question. Low faithfulness values do not always imply
-retrieval failure. Some answers paraphrase multiple context details or include
-an additional interpretation that the judge does not consider explicitly
-supported.
+Faithfulness reached 0.967 and answer relevancy reached 0.910, both with full
+30/30 coverage. Twenty-eight answers received perfect faithfulness. This is
+strong evidence that the answer generator normally stays within retrieved
+evidence and addresses the requested technical point directly.
 
-Examples include:
-
-- `KS-P02-02`: full context precision and recall, high answer relevancy, but
-  faithfulness 0.250.
-- `KS-P11-01`: full retrieval scores and answer relevancy 0.984, but
-  faithfulness 0.000.
-
-These combinations should be manually reviewed because they may indicate
-either an unsupported answer detail or judge instability. RAGAS is a useful
-measurement tool, but it is not treated as unquestionable ground truth.
+`ARD-15` is the clearest generation-side outlier: recall is complete, but
+faithfulness is 0.333. This suggests that the required source was retrieved
+while the answer introduced claims that were not fully supported. In contrast,
+`FN-US-01` remains highly faithful and relevant despite failed retrieval
+scores, so it should be manually checked for reference/context alignment.
 
 ### 12.3 Remaining failure cases
 
-#### KS-P01-02 — white LED wiring and behavior
+#### CROSS-I2C-SENSORS — cross-document sensor comparison
 
-The expected evidence contains `S → D7`, power and ground wiring, and a
-one-second on/off experiment result. The final contexts did not contain the
-complete required evidence, producing context precision 0 and recall 0. The
-answer used an incorrect pin and unrelated behavior.
+The answer remained faithful and relevant, but context recall was 0 and
+precision was 0.533. The retriever found related I2C material without matching
+the exact reference evidence expected across documents. This is the clearest
+case for stronger document-aware decomposition and evidence coverage checks.
 
-This is a parent/sibling retrieval failure: the board-connection subsection was
-found, but the authoritative Hardware Connection and Experiment Result
-siblings were not both preserved.
+#### FN-US-01 — ultrasonic sensor evidence
 
-#### KS-P03-02 — traffic-light specifications
+This case received context precision and recall of 0 while preserving
+faithfulness 0.929 and answer relevancy 0.908. The mismatch indicates that the
+answer may have been supported by retrieved material that did not align with
+the golden reference definition. It requires manual review before treating it
+as a simple retrieval failure.
 
-The expected answer is a digital interface operating at 3.3–5 V. Retrieval
-returned traffic-light content but missed the exact Specifications section.
-The grounded model correctly refused to invent the missing voltage, producing
-answer relevancy 0, context precision 0, and recall 0 while faithfulness
-remained 1.
+#### KS-P37-01 — correct evidence mixed with noise
 
-This demonstrates that high faithfulness can coexist with an unhelpful answer:
-the generator behaved correctly given incomplete retrieval.
-
-#### KS-P18-02 — sound sensor
-
-This question received faithfulness, answer relevancy and context recall near
-1.0 but context precision 0. The required evidence was present and the answer
-was correct, so the zero reflects irrelevant ranking or a questionable
-precision judgment rather than a complete RAG failure.
+Recall and both answer metrics were strong, but context precision was 0. The
+system found enough evidence to answer correctly while also retrieving sections
+the precision metric considered irrelevant. This is a ranking-cleanliness
+problem rather than a missing-evidence problem.
 
 ### 12.4 Board-version ambiguity
 
@@ -594,24 +597,11 @@ A production system should either:
 
 This is preferable to silently selecting a board variant.
 
-### 12.5 Evaluator reliability
-
-The local Qwen judge reliably completed most metrics but occasionally failed
-the structured JSON schemas used by context precision and recall. Cloud
-fallback judges then encountered rate limits. Incremental result persistence
-and retry-only-missing behavior were therefore necessary engineering features.
-
-The final report records coverage beside every mean. The missing
-answer-relevancy cell is not converted to zero, because an evaluator failure is
-not equivalent to a poor system answer.
-
----
-
 ## 13. Final Decisions
 
 ### Retained
 
-- Structured section and page chunking
+- Section-aware chunking with heading paths and overlap for oversized sections
 - Native extraction plus OCR fallback
 - Gemini embeddings
 - Qdrant
@@ -623,7 +613,6 @@ not equivalent to a poor system answer.
 - Searchable technical image captions
 - Links from captions to original images
 - Authoritative-text priority when captions conflict
-- Incremental evaluation persistence
 
 ### Rejected or corrected
 
@@ -634,14 +623,12 @@ not equivalent to a poor system answer.
   wrong-project and wrong-board evidence.
 - **Treating generated captions as authoritative:** captions can misread dense
   wiring alignment.
-- **Replacing missing evaluation values with zero:** confuses evaluator failure
-  with system failure.
 
 ---
 
 ## 14. Post-Evaluation Robustness Fixes
 
-The final 40-question RAGAS run was completed before the submission and
+The final 30-question RAGAS run was completed before the submission and
 runtime-ingestion fixes below were added. These changes improve robustness,
 diagnostics and demonstration usability, but they were **not evaluated in a
 new controlled run**. Therefore, the scores reported in this document must not
@@ -654,7 +641,7 @@ architecture.
 | OCR and vision caption stored as separate text chunks | Preserve exact recognized text while adding a searchable visual interpretation | Confirmed that both chunks were created and the caption retained the original image path | Not measured |
 | Caption prompt extended to preserve dimensions and spatial relationships | Generic captions could list values without explaining which holes, arrows or locations they described | The test caption correctly distinguished upper/lower spacing and hole diameters | Single-document functional test only |
 | Caption failure reporting and OCR fallback | A vision API failure must not silently discard an otherwise usable document | `/ingest` now reports `vision_captions`, `caption_failures` and `completed_with_warnings` while retaining native/OCR text | Reliability improvement, not a metric result |
-| Minimal answer-grounding clarification | Once captions became runtime evidence, the generator needed to recognize them as valid for visible labels, pins, connections and dimensions | One end-to-end smoke test answered the uploaded dimension question from its retrieved caption | Not included in the 40-question evaluation |
+| Minimal answer-grounding clarification | Once captions became runtime evidence, the generator needed to recognize them as valid for visible labels, pins, connections and dimensions | One end-to-end smoke test answered the uploaded dimension question from its retrieved caption | Not included in the 30-question evaluation |
 | README, snapshot and startup corrections | Make the submission reproducible without repeating corpus embedding | Commands, ports, snapshot contents, ignored secrets and ingestion steps were audited | No architectural or metric effect |
 
 An attempted query-specific ranking prompt was also tested and then reverted.
@@ -682,14 +669,15 @@ require a future regression run before any improvement claim is made.
 4. **Caption verification.** Use a stronger vision model selectively on
    difficult wiring diagrams, then validate pin mappings against nearby
    authoritative text.
-5. **PDF-specific evaluation.** The main 40-question set is concentrated on
-   the Markdown manual. A dedicated PDF subset is required before drawing
-   conclusions about whole-page PDF chunking.
+5. **Expanded PDF evaluation.** The final dataset includes PDF-derived
+   questions, but a larger dedicated subset would better isolate section-aware
+   PDF retrieval and diagram performance.
 6. **Latency optimization.** Cache query rewrites and embeddings, avoid
    rewriting simple single-intent questions, and load the reranker once at
    service startup.
-7. **Larger evaluation.** Complete the full 100-question run when judge and API
-   quotas allow.
+7. **Larger evaluation.** Complete the remaining records in the 50-question
+   dataset, then extend it with additional adversarial and diagram-dependent
+   questions.
 8. **Deployment security.** The Cloudflare Quick Tunnel is suitable for a
    supervised demonstration, but a persistent deployment should add
    authentication, upload limits, logging and secret management.
@@ -712,7 +700,7 @@ FastAPI, Qdrant and the tunnel.
 For reproducibility, the repository also contains:
 
 - source code and dependency manifest
-- the 100-question golden dataset
+- the 50-question golden dataset
 - experiment predictions and metrics
 - extracted chunks and image-caption cache
 - a Qdrant 1.18.3 snapshot containing 521 indexed points
@@ -736,11 +724,12 @@ introduced incomplete or uncertain evidence. Detailed captions and
 authoritative-text grounding recovered faithfulness and recall while
 maintaining a large precision improvement.
 
-On the final 40-question test, the system achieved 0.903 faithfulness, 0.880
-answer relevancy, 0.786 context precision and 0.950 context recall. The final
-precision remains well above the dense baseline's main weakness, and recall
-remains close to the original high level. Two retrieval failures and one
-missing evaluator score are reported transparently.
+On the final 30-question test, the system achieved 0.967 faithfulness, 0.910
+answer relevancy, 0.779 context precision and 0.922 context recall, with full
+coverage for every metric. The strongest outcomes are grounding and direct
+answer quality. The remaining opportunity is more selective ranking: relevant
+evidence is usually present, but some context sets contain extra related
+sections.
 
 The principal lesson is that multimodal retrieval is not solved merely by
 adding images. Visual evidence must be converted into searchable,

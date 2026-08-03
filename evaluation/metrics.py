@@ -26,10 +26,8 @@ def calculate_metrics(predictions_path: Path, output_path: Path):
     import pandas as pd
     from datasets import Dataset
     from langchain_google_genai import GoogleGenerativeAIEmbeddings
-    from langchain_google_genai import ChatGoogleGenerativeAI
     from langchain_ollama import ChatOllama
     from langchain_openai import ChatOpenAI
-    from openai import RateLimitError
     from ragas import evaluate
     from ragas.embeddings import LangchainEmbeddingsWrapper
     from ragas.llms import LangchainLLMWrapper
@@ -43,13 +41,17 @@ def calculate_metrics(predictions_path: Path, output_path: Path):
 
     rows = load_predictions(predictions_path)
     evaluator_llm = LangchainLLMWrapper(
-        ChatOllama(
-            model="qwen3:4b-instruct",
+        ChatOpenAI(
+            model=os.getenv(
+                "RAGAS_EVALUATOR_MODEL",
+                "nvidia/nemotron-3-ultra-550b-a55b",
+            ),
+            api_key=os.environ["OPENROUTER_API_KEY"],
+            base_url="https://openrouter.ai/api/v1",
             temperature=0,
-            num_ctx=8192,
-            format="json",
-            client_kwargs={"timeout": 600},
-            async_client_kwargs={"timeout": 600},
+            max_tokens=2048,
+            timeout=600,
+            max_retries=2,
         )
     )
     evaluator_embeddings = LangchainEmbeddingsWrapper(
@@ -58,21 +60,14 @@ def calculate_metrics(predictions_path: Path, output_path: Path):
             google_api_key=os.environ["GEMINI_API_KEY"],
         )
     )
-    fallback_llm = LangchainLLMWrapper(
-        ChatOpenAI(
-            model="nvidia/nemotron-3-ultra-550b-a55b:free",
-            api_key=os.environ["OPENROUTER_API_KEY"],
-            base_url="https://openrouter.ai/api/v1",
+    local_fallback_llm = LangchainLLMWrapper(
+        ChatOllama(
+            model="qwen3:4b-instruct",
             temperature=0,
-            timeout=600,
-        )
-    )
-    structured_fallback_llm = LangchainLLMWrapper(
-        ChatGoogleGenerativeAI(
-            model="gemini-3.1-flash-lite",
-            google_api_key=os.environ["GEMINI_API_KEY"],
-            temperature=0,
-            timeout=600,
+            num_ctx=8192,
+            format="json",
+            client_kwargs={"timeout": 600},
+            async_client_kwargs={"timeout": 600},
         )
     )
 
@@ -83,9 +78,12 @@ def calculate_metrics(predictions_path: Path, output_path: Path):
         "context_recall": context_recall,
         "context_precision": context_precision,
     }
+    evaluator_rpm = int(os.getenv("RAGAS_REQUESTS_PER_MINUTE", "10"))
+    if evaluator_rpm < 1:
+        raise ValueError("RAGAS_REQUESTS_PER_MINUTE must be at least 1")
+    evaluator_interval = 60 / evaluator_rpm
 
-    existing_results = output_path.exists()
-    if existing_results:
+    if output_path.exists():
         results = pd.read_csv(output_path)
     else:
         results = pd.DataFrame(
@@ -101,48 +99,36 @@ def calculate_metrics(predictions_path: Path, output_path: Path):
         if metric_name not in results:
             results[metric_name] = float("nan")
 
-        missing_indexes = results.index[results[metric_name].isna()].tolist()
-        if not missing_indexes:
-            continue
+        for index in results.index[results[metric_name].isna()].tolist():
+            value = float("nan")
+            time.sleep(evaluator_interval)
+            try:
+                score = evaluate(
+                    Dataset.from_list([rows[index]]),
+                    metrics=[metric],
+                    llm=evaluator_llm,
+                    embeddings=evaluator_embeddings,
+                    run_config=RunConfig(
+                        timeout=600,
+                        max_retries=1,
+                        max_workers=1,
+                    ),
+                    raise_exceptions=True,
+                ).to_pandas()
+                value = score.loc[0, metric_name]
+            except Exception as error:
+                print(
+                    f"Nemotron RAGAS failed for {metric_name} "
+                    f"row {index}: {error}"
+                )
 
-        if not existing_results:
-            missing_rows = [rows[index] for index in missing_indexes]
-            scores = evaluate(
-                Dataset.from_list(missing_rows),
-                metrics=[metric],
-                llm=evaluator_llm,
-                embeddings=evaluator_embeddings,
-                run_config=RunConfig(
-                    timeout=600,
-                    max_retries=2,
-                    max_workers=1,
-                ),
-            ).to_pandas()
-
-            for index, score in zip(missing_indexes, scores[metric_name]):
-                results.loc[index, metric_name] = score
-
-            results.to_csv(output_path, index=False)
-
-        fallback_indexes = results.index[results[metric_name].isna()].tolist()
-        for index in fallback_indexes:
-            for attempt in range(5):
+            if pd.isna(value):
+                print(f"Using local Ollama fallback for {metric_name} row {index}")
                 try:
-                    if metric_name in {
-                        "context_precision",
-                        "context_recall",
-                    }:
-                        time.sleep(5)
-
                     score = evaluate(
                         Dataset.from_list([rows[index]]),
                         metrics=[metric],
-                        llm=(
-                            structured_fallback_llm
-                            if metric_name
-                            in {"context_precision", "context_recall"}
-                            else fallback_llm
-                        ),
+                        llm=local_fallback_llm,
                         embeddings=evaluator_embeddings,
                         run_config=RunConfig(
                             timeout=600,
@@ -151,21 +137,17 @@ def calculate_metrics(predictions_path: Path, output_path: Path):
                         ),
                         raise_exceptions=True,
                     ).to_pandas()
-                except RateLimitError:
-                    break
-                except Exception:
-                    if attempt < 4:
-                        time.sleep(60)
-                    continue
+                    value = score.loc[0, metric_name]
+                except Exception as error:
+                    print(
+                        f"Local RAGAS fallback failed for {metric_name} "
+                        f"row {index}: {error}"
+                    )
 
-                value = score.loc[0, metric_name]
+            if pd.notna(value):
+                results.loc[index, metric_name] = value
 
-                if pd.notna(value):
-                    results.loc[index, metric_name] = value
-                    results.to_csv(output_path, index=False)
-                    break
-
-                if attempt < 4:
-                    time.sleep(60)
+            results.to_csv(output_path, index=False)
+            print(f"Saved {metric_name} row {index}: {value}")
 
     return results

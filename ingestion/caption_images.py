@@ -62,7 +62,7 @@ def large_enough(path):
             width, height = image.size
     except Exception:
         return False
-    return width >= 160 and height >= 100
+    return width >= 80 and height >= 80 and width * height >= 20_000
 
 
 def useful_location(image_chunk):

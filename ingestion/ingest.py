@@ -1,15 +1,15 @@
+import hashlib
 import json
 import re
-import shutil
 import zipfile
 from pathlib import Path
 
 from google import genai
 
 from .caption_images import create_caption
+from .pdf_parser import parse_pdf as parse_pdf_sections
 
 
-IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".tiff", ".bmp"}
 HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.+)$")
 BOLD_SECTION_PATTERN = re.compile(r"^\s*\*\*(.+?)\*\*\s*$")
 IMAGE_PATTERN = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
@@ -53,66 +53,7 @@ def image_chunk(chunk_id, path, source, location, parent_id, page=None):
 
 
 def parse_pdf(path, output_directory):
-    import fitz
-    import pytesseract
-    from PIL import Image
-
-    chunks = []
-    failed_pages = []
-    native_pages = 0
-    ocr_pages = 0
-    pages_directory = output_directory / "pages"
-    pages_directory.mkdir(exist_ok=True)
-
-    document = fitz.open(path)
-
-    for page_index, page in enumerate(document):
-        page_number = page_index + 1
-        text = page.get_text().strip()
-
-        pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
-        page_image_path = pages_directory / f"page-{page_number}.png"
-        pixmap.save(page_image_path)
-
-        if len(text) < 30:
-            text = pytesseract.image_to_string(Image.open(page_image_path)).strip()
-            ocr_pages += 1
-        else:
-            native_pages += 1
-
-        parent_id = f"text-page-{page_number:04d}"
-
-        if text:
-            chunks.append(
-                text_chunk(
-                    parent_id,
-                    text,
-                    path.name,
-                    f"Page {page_number}",
-                    page_number,
-                )
-            )
-        else:
-            failed_pages.append(page_number)
-            parent_id = ""
-
-        chunks.append(
-            image_chunk(
-                f"image-page-{page_number:04d}",
-                page_image_path,
-                path.name,
-                f"Page {page_number}",
-                parent_id,
-                page_number,
-            )
-        )
-
-    return chunks, {
-        "pages": len(document),
-        "native_pages": native_pages,
-        "ocr_pages": ocr_pages,
-        "failed_pages": failed_pages,
-    }
+    return parse_pdf_sections(path, output_directory, text_chunk, image_chunk)
 
 
 def parse_markdown(path, output_directory):
@@ -255,83 +196,9 @@ def parse_docx(path, output_directory):
     return chunks, {}
 
 
-def parse_pptx(path, output_directory):
-    from pptx import Presentation
-    from pptx.enum.shapes import MSO_SHAPE_TYPE
-
-    chunks = []
-    presentation = Presentation(path)
-    media_directory = output_directory / "media"
-
-    for slide_number, slide in enumerate(presentation.slides, 1):
-        lines = [shape.text for shape in slide.shapes if hasattr(shape, "text_frame")]
-        text = "\n".join(lines).strip()
-        parent_id = f"text-slide-{slide_number:04d}"
-
-        if text:
-            chunks.append(
-                text_chunk(
-                    parent_id,
-                    text,
-                    path.name,
-                    f"Slide {slide_number}",
-                    slide_number,
-                )
-            )
-
-        image_number = 0
-        for shape in slide.shapes:
-            if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
-                image_number += 1
-                media_directory.mkdir(exist_ok=True)
-                extension = shape.image.ext
-                image_path = (
-                    media_directory / f"slide-{slide_number}-image-{image_number}.{extension}"
-                )
-                image_path.write_bytes(shape.image.blob)
-                chunks.append(
-                    image_chunk(
-                        f"image-slide-{slide_number:04d}-{image_number}",
-                        image_path,
-                        path.name,
-                        f"Slide {slide_number}",
-                        parent_id if text else "",
-                        slide_number,
-                    )
-                )
-
-    return chunks, {"pages": len(presentation.slides)}
-
-
-def parse_image(path, output_directory):
-    import pytesseract
+def add_vision_captions(chunks, cache_path=None):
     from PIL import Image
 
-    image_path = output_directory / path.name
-    shutil.copy2(path, image_path)
-    text = pytesseract.image_to_string(Image.open(path)).strip()
-    chunks = []
-    failed_pages = []
-    parent_id = ""
-
-    if text:
-        parent_id = "text-0001"
-        chunks.append(text_chunk(parent_id, text, path.name, "Image", 1))
-    else:
-        failed_pages.append(1)
-
-    chunks.append(
-        image_chunk("image-0001", image_path, path.name, "Image", parent_id, 1)
-    )
-    return chunks, {
-        "pages": 1,
-        "native_pages": 0,
-        "ocr_pages": 1,
-        "failed_pages": failed_pages,
-    }
-
-
-def add_vision_captions(chunks):
     client = genai.Client()
     text_chunks = {
         chunk["chunk_id"]: chunk
@@ -340,23 +207,68 @@ def add_vision_captions(chunks):
     }
     caption_chunks = []
     caption_failures = []
+    seen_images = set()
+    caption_cache = {}
+    if cache_path and cache_path.exists():
+        with cache_path.open(encoding="utf-8") as file:
+            for line in file:
+                record = json.loads(line)
+                caption_cache[record["image_hash"]] = record["caption"]
 
-    for image in [
+    images = [
         chunk for chunk in chunks if chunk["modality"] == "image"
-    ]:
+    ]
+    for image_number, image in enumerate(images, 1):
+        location = image["metadata"].get("section_path", "").casefold()
+        if (
+            "component list" in location
+            or location in {"welcome", "contents", "preface", "first use"}
+            or location.startswith("welcome >")
+        ):
+            continue
+
+        image_path = Path(image["image_path"])
+        try:
+            digest = hashlib.sha256(image_path.read_bytes()).hexdigest()
+            with Image.open(image_path) as opened_image:
+                width, height = opened_image.size
+        except Exception as error:
+            caption_failures.append({"image": str(image_path), "error": str(error)})
+            continue
+        if (
+            digest in seen_images
+            or width < 80
+            or height < 80
+            or width * height < 20_000
+        ):
+            continue
+        seen_images.add(digest)
+
         parent_id = image["metadata"].get("parent_chunk_id")
         nearby_text = text_chunks.get(parent_id, {}).get("text", "")[:4000]
 
-        try:
-            caption = create_caption(client, image, nearby_text)
-        except Exception as error:
-            caption_failures.append(
-                {
-                    "image": image["image_path"],
-                    "error": str(error),
-                }
-            )
-            continue
+        if digest in caption_cache:
+            caption = caption_cache[digest]
+        else:
+            try:
+                caption = create_caption(client, image, nearby_text)
+            except Exception as error:
+                caption_failures.append(
+                    {
+                        "image": image["image_path"],
+                        "error": str(error),
+                    }
+                )
+                continue
+            if cache_path:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                with cache_path.open("a", encoding="utf-8") as file:
+                    file.write(json.dumps({
+                        "image_hash": digest,
+                        "caption": caption,
+                    }, ensure_ascii=False) + "\n")
+
+        print(f"Captioned image {image_number}/{len(images)}")
 
         if caption.upper() == "SKIP":
             continue
@@ -373,6 +285,14 @@ def add_vision_captions(chunks):
                 },
             }
         )
+        parent = text_chunks.get(parent_id)
+        if parent is not None:
+            parent["metadata"].setdefault("image_chunk_ids", []).append(
+                f"caption-{image['chunk_id']}"
+            )
+            parent["metadata"].setdefault("image_paths", []).append(
+                image["image_path"]
+            )
 
     return chunks + caption_chunks, {
         "vision_captions": len(caption_chunks),
@@ -392,14 +312,13 @@ def ingest_document(path: Path, output_directory: Path):
         chunks, details = parse_text(path)
     elif extension == ".docx":
         chunks, details = parse_docx(path, output_directory)
-    elif extension == ".pptx":
-        chunks, details = parse_pptx(path, output_directory)
-    elif extension in IMAGE_EXTENSIONS:
-        chunks, details = parse_image(path, output_directory)
     else:
         raise ValueError(f"Unsupported file type: {extension}")
 
-    chunks, caption_details = add_vision_captions(chunks)
+    chunks, caption_details = add_vision_captions(
+        chunks,
+        output_directory / "caption_cache.jsonl",
+    )
     details.update(caption_details)
 
     chunks_path = output_directory / "chunks.jsonl"

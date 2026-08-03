@@ -1,4 +1,5 @@
 import mimetypes
+import os
 import time
 from pathlib import Path
 
@@ -9,9 +10,25 @@ from google.genai.errors import ClientError
 
 MODEL = "gemini-embedding-2"
 VECTOR_SIZE = 768
+last_request_time = 0
+
+
+def wait_for_rate_limit():
+    global last_request_time
+
+    requests_per_minute = int(os.getenv("GEMINI_REQUESTS_PER_MINUTE", "10"))
+    if requests_per_minute < 1:
+        raise ValueError("GEMINI_REQUESTS_PER_MINUTE must be at least 1")
+
+    minimum_interval = 60 / requests_per_minute
+    elapsed = time.monotonic() - last_request_time
+    if elapsed < minimum_interval:
+        time.sleep(minimum_interval - elapsed)
+    last_request_time = time.monotonic()
 
 
 def embed_text(client, text):
+    wait_for_rate_limit()
     result = client.models.embed_content(
         model=MODEL,
         contents=text,
@@ -21,6 +38,7 @@ def embed_text(client, text):
 
 
 def embed_batch(client, chunks):
+    wait_for_rate_limit()
     contents = []
 
     for chunk in chunks:
